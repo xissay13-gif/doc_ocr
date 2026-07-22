@@ -32,6 +32,7 @@ class Config:
     max_skew: float = 10.0
     wide: float = 46.0
     make_pdf: bool = False                 # создавать ли searchable-PDF
+    pdf_bw: bool = True                     # PDF из 1-битной ч/б картинки (в ~10 раз легче)
     delimiter: str = ";"                   # разделитель CSV
     csv_encoding: str = "cp1251"           # кодировка CSV (Windows-1251)
     base_dir: Optional[Path] = None       # для относительных имён в колонке file
@@ -77,7 +78,12 @@ def process_page(task, tess: Optional[Tesseract], cfg: Config):
             row["seconds"] = round(time.perf_counter() - start, 2)
             return row, pdf_bytes
 
-        ocr_img = preprocess(orient.image, binarize=cfg.binarize, denoise=True, pad=15)
+        if cfg.make_pdf and cfg.pdf_bw:
+            # 1-битная ч/б картинка: распознанный PDF сжимается факс-методом (в
+            # ~10 раз легче), точность OCR при этом практически не меняется.
+            ocr_img = preprocess(orient.image, binarize=True, denoise=True, pad=15).convert("1")
+        else:
+            ocr_img = preprocess(orient.image, binarize=cfg.binarize, denoise=True, pad=15)
         if cfg.make_pdf:
             result, pdf_bytes = tess.image_to_document(ocr_img)
         else:

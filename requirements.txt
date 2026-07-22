@@ -1,0 +1,5 @@
+# court-ocr — зависимости (Python 3.9+)
+PyMuPDF>=1.24    # рендер PDF без poppler
+Pillow>=10.0     # работа с изображениями
+numpy>=1.24      # бинаризация, оценка угла
+scipy>=1.10      # поворот изображений (ndimage.rotate)

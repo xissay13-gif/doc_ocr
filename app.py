@@ -82,9 +82,9 @@ def process_batch(files, tess: Tesseract, cfg: Config, threads: int) -> None:
         print(line, flush=True)
 
     def on_doc(info):
-        rows = info["rows"]
+        pages = info["pages"]
         sec = 0.0
-        for r in rows:
+        for r in pages:
             try:
                 sec += float(r.get("seconds") or 0)
             except ValueError:
@@ -92,8 +92,9 @@ def process_batch(files, tess: Tesseract, cfg: Config, threads: int) -> None:
         parts = [info["csv"].name]
         if info["pdf"]:
             parts.append(info["pdf"].name)
-        print(f"  ✓ Документ «{info['stem']}» готов: {len(rows)} стр., "
-              f"машинное время {_fmt(sec)}, точность {_mean_conf(rows)}%")
+        print(f"  ✓ Документ «{info['stem']}» готов: {len(pages)} стр., "
+              f"{info['n_lines']} строк, машинное время {_fmt(sec)}, "
+              f"точность {_mean_conf(pages)}%")
         print("      → в папке output: " + "  +  ".join(parts))
         print("-" * 64)
 
@@ -101,7 +102,7 @@ def process_batch(files, tess: Tesseract, cfg: Config, threads: int) -> None:
                             on_page=on_page, on_doc=on_doc)
     elapsed = time.perf_counter() - t0
 
-    all_rows = [r for d in docs for r in d["rows"]]
+    all_rows = [r for d in docs for r in d["pages"]]
     errs = sum(1 for r in all_rows if str(r.get("status", "")).startswith("error"))
     print("=" * 64)
     print(f"Готово за {_fmt(elapsed)}. Документов: {len(docs)}, страниц: {len(all_rows)} "

@@ -1,4 +1,8 @@
-"""Конвейер обработки страниц в несколько потоков и запись результата в CSV."""
+"""Конвейер обработки страниц в несколько потоков.
+
+Результат по каждому документу: построчный CSV (колонки page, line_id, line;
+кодировка Windows-1251) и, при make_pdf, распознанный PDF с текстовым слоем.
+"""
 from __future__ import annotations
 
 import csv
@@ -13,10 +17,12 @@ from typing import Callable, List, Optional
 
 from PIL import ImageOps
 
-from . import extract
 from .ocr import Tesseract
 from .orient import correct_orientation
 from .render import preprocess, render_page
+
+# Колонки построчного CSV.
+LINE_FIELDS = ["page", "line_id", "line"]
 
 
 @dataclass
@@ -25,20 +31,16 @@ class Config:
     binarize: bool = False
     max_skew: float = 10.0
     wide: float = 46.0
-    keep_raw: bool = True
     make_pdf: bool = False                 # создавать ли searchable-PDF
+    delimiter: str = ";"                   # разделитель CSV
+    csv_encoding: str = "cp1251"           # кодировка CSV (Windows-1251)
     base_dir: Optional[Path] = None       # для относительных имён в колонке file
     save_text_dir: Optional[Path] = None  # куда класть .txt каждой страницы
+    # совместимость: раньше был keep_raw; больше не используется
+    keep_raw: bool = True
 
 
 _print_lock = threading.Lock()
-
-# Поля, которыми управляет конвейер (не должны затираться пустыми значениями из
-# extract_fields, который возвращает весь набор FIELDS с "" по умолчанию).
-_PIPELINE_KEYS = {
-    "file", "page", "rotation_deg", "ocr_confidence", "ocr_chars", "seconds",
-    "status", "raw_text",
-}
 
 
 def _rel(path: Path, base: Optional[Path]) -> str:
@@ -51,13 +53,16 @@ def _rel(path: Path, base: Optional[Path]) -> str:
 
 
 def process_page(task, tess: Optional[Tesseract], cfg: Config):
-    """Обработать одну страницу. Вернуть (row, pdf_bytes).
+    """Обработать одну страницу. Вернуть (page_row, pdf_bytes).
 
-    pdf_bytes — одностраничный searchable-PDF (если cfg.make_pdf), иначе b""."""
+    page_row — словарь с метаданными страницы и списком распознанных строк
+    (ключ "lines"). pdf_bytes — одностраничный searchable-PDF (если make_pdf)."""
     path, page_index, _n = task
-    row = {k: "" for k in extract.FIELDS}
-    row["file"] = _rel(path, cfg.base_dir)
-    row["page"] = page_index + 1
+    row = {
+        "file": _rel(path, cfg.base_dir), "page": page_index + 1,
+        "rotation_deg": "", "ocr_confidence": "", "ocr_chars": 0,
+        "seconds": 0.0, "status": "", "lines": [],
+    }
     pdf_bytes = b""
     start = time.perf_counter()
     try:
@@ -78,22 +83,15 @@ def process_page(task, tess: Optional[Tesseract], cfg: Config):
         else:
             result = tess.image_to_data(ocr_img)
 
-        fields = extract.extract_fields(result.text)
-        for k, v in fields.items():
-            if k in _PIPELINE_KEYS:
-                continue
-            row[k] = v
-
         row["ocr_confidence"] = result.confidence
         row["ocr_chars"] = len(result.text)
+        row["lines"] = result.lines
         row["status"] = "ok" if result.text.strip() else "empty"
-        row["raw_text"] = result.text if cfg.keep_raw else ""
 
         if cfg.save_text_dir:
             _save_text(cfg.save_text_dir, path, page_index, result.text)
     except Exception as exc:  # одна страница не должна ронять весь прогон
         row["status"] = f"error: {type(exc).__name__}: {exc}"
-        row["rotation_deg"] = row.get("rotation_deg", "")
         with _print_lock:  # не перебиваем строку прогресса главного потока
             sys.stderr.write(
                 f"\n[!] Ошибка на {row['file']} стр.{page_index + 1}: {exc}\n"
@@ -109,14 +107,33 @@ def _save_text(out_dir: Path, path: Path, page_index: int, text: str) -> None:
     (out_dir / name).write_text(text, encoding="utf-8")
 
 
+def page_rows_to_lines(page_rows: List[dict]) -> List[dict]:
+    """Развернуть страницы в строки: {page, line_id, line}. line_id — номер строки
+    в пределах страницы (с 1)."""
+    out: List[dict] = []
+    for pr in page_rows:
+        page = pr.get("page")
+        for i, line in enumerate(pr.get("lines", []), 1):
+            out.append({"page": page, "line_id": i, "line": line})
+    return out
+
+
+def write_lines_csv(line_rows: List[dict], out_path: Path, delimiter: str = ";",
+                    encoding: str = "cp1251") -> None:
+    """Записать построчный CSV (page; line_id; line). Символы вне кодировки
+    заменяются на «?» (errors=replace), чтобы запись не падала."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding=encoding, errors="replace", newline="") as f:
+        writer = csv.writer(f, delimiter=delimiter, quoting=csv.QUOTE_MINIMAL)
+        writer.writerow(LINE_FIELDS)
+        for r in line_rows:
+            writer.writerow([r["page"], r["line_id"], r["line"]])
+
+
 def run(tasks: List, tess: Optional[Tesseract], cfg: Config, threads: int,
         progress: bool = True,
         on_page: Optional[Callable[[dict, int, int], None]] = None) -> List[dict]:
-    """Обработать все задачи в пуле из `threads` потоков, вернуть строки CSV.
-
-    on_page(row, done, total) вызывается по мере готовности каждой страницы
-    (под общей блокировкой печати) — для показа времени и точности.
-    """
+    """Обработать все задачи в пуле из `threads` потоков, вернуть строки-страницы."""
     rows: List[dict] = []
     total = len(tasks)
     done = 0
@@ -135,7 +152,6 @@ def run(tasks: List, tess: Optional[Tesseract], cfg: Config, threads: int,
                     sys.stderr.flush()
     if progress and total and on_page is None:
         sys.stderr.write("\n")
-    # Упорядочим по файлу и странице для стабильного CSV.
     rows.sort(key=lambda r: (str(r.get("file", "")), int(r.get("page", 0) or 0)))
     return rows
 
@@ -149,7 +165,7 @@ def _safe_stem(path: Path) -> str:
 
 
 def _merge_pdfs(page_pdfs: List[bytes], out_path: Path) -> bool:
-    """Склеить одностраничные PDF (в порядке страниц) в один. Возвращает True при успехе."""
+    """Склеить одностраничные PDF (в порядке страниц) в один. True при успехе."""
     import fitz  # PyMuPDF
 
     from .render import _FITZ_LOCK  # fitz не потокобезопасен — берём общую блокировку
@@ -172,17 +188,19 @@ def _merge_pdfs(page_pdfs: List[bytes], out_path: Path) -> bool:
 
 
 def write_document(src_path: Path, page_map: dict, output_dir: Path,
-                   keep_raw: bool = True, delimiter: str = ";",
+                   delimiter: str = ";", encoding: str = "cp1251",
                    make_pdf: bool = True) -> dict:
-    """Записать результат ОДНОГО документа: <имя>.csv (+ <имя>.pdf) прямо в output/."""
+    """Записать результат ОДНОГО документа: <имя>.csv (page;line_id;line) и, при
+    make_pdf, <имя>.pdf — прямо в output/."""
     stem = _safe_stem(src_path)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     pages = sorted(page_map.keys())
-    rows = [page_map[i][0] for i in pages]
+    page_rows = [page_map[i][0] for i in pages]
+    line_rows = page_rows_to_lines(page_rows)
 
     csv_path = output_dir / f"{stem}.csv"
-    write_csv(rows, csv_path, delimiter=delimiter, keep_raw=keep_raw)
+    write_lines_csv(line_rows, csv_path, delimiter=delimiter, encoding=encoding)
 
     pdf_path = None
     if make_pdf:
@@ -191,7 +209,8 @@ def write_document(src_path: Path, page_map: dict, output_dir: Path,
         if _merge_pdfs(page_pdfs, target):
             pdf_path = target
 
-    return {"stem": stem, "dir": output_dir, "csv": csv_path, "pdf": pdf_path, "rows": rows}
+    return {"stem": stem, "dir": output_dir, "csv": csv_path, "pdf": pdf_path,
+            "pages": page_rows, "n_lines": len(line_rows)}
 
 
 def run_per_document(files: List[Path], tess: Optional[Tesseract], cfg: Config,
@@ -200,9 +219,9 @@ def run_per_document(files: List[Path], tess: Optional[Tesseract], cfg: Config,
                      on_doc: Optional[Callable[[dict], None]] = None) -> List[dict]:
     """Обработать файлы по страницам в общем пуле из `threads` потоков.
 
-    Как только все страницы очередного документа готовы — его CSV и searchable-PDF
-    сразу пишутся в output/<имя>/ и вызывается on_doc(info). on_page(row) — по
-    каждой странице. Возвращает список info по документам (в порядке готовности)."""
+    Как только все страницы документа готовы — его CSV и searchable-PDF сразу
+    пишутся в output/ и вызывается on_doc(info). on_page(page_row) — по каждой
+    странице. Возвращает список info по документам (в порядке готовности)."""
     from .render import count_pages
 
     tasks = []
@@ -235,7 +254,8 @@ def run_per_document(files: List[Path], tess: Optional[Tesseract], cfg: Config,
             if remaining[f] == 0:
                 info = write_document(
                     f, collected[f], output_dir,
-                    keep_raw=cfg.keep_raw, make_pdf=cfg.make_pdf,
+                    delimiter=cfg.delimiter, encoding=cfg.csv_encoding,
+                    make_pdf=cfg.make_pdf,
                 )
                 docs_info.append(info)
                 if on_doc is not None:
@@ -243,20 +263,3 @@ def run_per_document(files: List[Path], tess: Optional[Tesseract], cfg: Config,
                         on_doc(info)
                 collected[f] = {}  # освобождаем память (PDF-байты страниц)
     return docs_info
-
-
-def write_csv(rows: List[dict], out_path: Path, delimiter: str = ";",
-              keep_raw: bool = True) -> None:
-    """Записать строки в CSV (UTF-8 с BOM — чтобы Excel корректно открыл кириллицу)."""
-    fields = list(extract.FIELDS)
-    if not keep_raw and "raw_text" in fields:
-        fields.remove("raw_text")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(
-            f, fieldnames=fields, delimiter=delimiter, extrasaction="ignore",
-            quoting=csv.QUOTE_MINIMAL,
-        )
-        writer.writeheader()
-        for r in rows:
-            writer.writerow(r)

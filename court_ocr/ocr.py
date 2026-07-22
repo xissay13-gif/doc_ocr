@@ -14,9 +14,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from PIL import Image
 
@@ -76,6 +76,7 @@ class OCRResult:
     text: str
     confidence: float           # средняя по словам, 0..100 (−1-строки отброшены)
     n_words: int
+    lines: List[str] = field(default_factory=list)  # распознанные строки по порядку
 
 
 class Tesseract:
@@ -248,4 +249,4 @@ def _parse_tsv(raw: str) -> OCRResult:
     text_lines = [" ".join(words_by_line[k]) for k in order]
     text = "\n".join(text_lines)
     mean_conf = round(sum(confs) / len(confs), 2) if confs else 0.0
-    return OCRResult(text=text, confidence=mean_conf, n_words=len(confs))
+    return OCRResult(text=text, confidence=mean_conf, n_words=len(confs), lines=text_lines)

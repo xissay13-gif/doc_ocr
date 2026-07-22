@@ -26,9 +26,10 @@ from pathlib import Path
 # гарантируем импорт пакета court_ocr рядом со скриптом
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from court_ocr import __version__, extract           # noqa: E402
+from court_ocr import __version__                     # noqa: E402
 from court_ocr.ocr import Tesseract, find_tessdata, find_tesseract  # noqa: E402
-from court_ocr.pipeline import Config, run, write_csv  # noqa: E402
+from court_ocr.pipeline import (Config, page_rows_to_lines, run,     # noqa: E402
+                                write_lines_csv)
 from court_ocr.render import iter_tasks                # noqa: E402
 
 
@@ -145,14 +146,16 @@ def main(argv=None) -> int:
 
     rows = run(tasks, tess, cfg, threads=args.threads, progress=True)
 
+    # Построчный CSV: page; line_id; line (кодировка Windows-1251).
+    line_rows = page_rows_to_lines(rows)
     out_path = Path(args.output)
-    write_csv(rows, out_path, delimiter=args.delimiter, keep_raw=not args.no_raw_text)
+    write_lines_csv(line_rows, out_path, delimiter=args.delimiter, encoding="cp1251")
 
-    _summary(rows, out_path)
+    _summary(rows, out_path, len(line_rows))
     return 0
 
 
-def _summary(rows, out_path: Path) -> None:
+def _summary(rows, out_path: Path, n_lines: int) -> None:
     ok = sum(1 for r in rows if r.get("status") == "ok")
     empty = sum(1 for r in rows if r.get("status") == "empty")
     errors = sum(1 for r in rows if str(r.get("status", "")).startswith("error"))
@@ -163,8 +166,8 @@ def _summary(rows, out_path: Path) -> None:
                   r["rotation_deg"] not in ("OSD 0°", ""))
     sys.stderr.write(
         "\nГотово.\n"
-        f"  CSV:            {out_path.resolve()}\n"
-        f"  Страниц:        {len(rows)} (ok={ok}, пусто={empty}, ошибок={errors})\n"
+        f"  CSV (page;line_id;line, cp1251): {out_path.resolve()}\n"
+        f"  Страниц:        {len(rows)} (ok={ok}, пусто={empty}, ошибок={errors}), строк: {n_lines}\n"
         f"  Средняя увер.:  {mean_conf}%\n"
         f"  Развёрнуто:     {rotated} страниц\n"
     )

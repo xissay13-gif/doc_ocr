@@ -1,0 +1,104 @@
+name: Сборка court-ocr.exe
+
+# Собирает готовую программу под Windows: движок Tesseract — внутрь exe,
+# языковая модель — рядом в tessdata/ (её можно менять, не пересобирая exe).
+# Результат: архив в разделе Actions, а по тегу vX.Y.Z — ещё и в Releases.
+
+on:
+  push:
+    branches: [main, 'claude/**']
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Windows x64
+    runs-on: windows-latest
+    permissions:
+      contents: write   # нужно только последнему шагу — публикации релиза по тегу
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Тесты
+        run: python -m unittest discover -s tests -t .
+
+      # Движок ~70 МБ и модели ~30 МБ качаются с внешних сайтов — кэшируем,
+      # чтобы не дёргать их на каждый коммит.
+      - name: Кэш движка и языковых моделей
+        id: tess-cache
+        uses: actions/cache@v4
+        with:
+          path: tesseract
+          key: tesseract-best-${{ hashFiles('setup_tesseract.py') }}
+
+      - name: Скачать движок и модели
+        if: steps.tess-cache.outputs.cache-hit != 'true'
+        run: python setup_tesseract.py --best
+
+      - name: Движок и модели на месте?
+        run: |
+          if (-not (Test-Path tesseract\tesseract.exe)) { throw "нет tesseract\tesseract.exe" }
+          foreach ($m in 'rus', 'osd') {
+            if (-not (Test-Path "tesseract\tessdata\$m.traineddata")) { throw "нет модели $m" }
+          }
+          & tesseract\tesseract.exe --version
+
+      - name: Собрать exe (движок внутрь)
+        run: |
+          New-Item -ItemType Directory -Force -Path _engine | Out-Null
+          Copy-Item tesseract\tesseract.exe _engine\
+          Copy-Item tesseract\*.dll _engine\
+          python -m PyInstaller --noconfirm --onefile --console --name court-ocr `
+            --icon icon.ico --add-data "_engine;tesseract" --paths . app.py
+
+      - name: Собрать папку поставки
+        run: |
+          $out = 'package\court-ocr'
+          New-Item -ItemType Directory -Force -Path "$out\tessdata" | Out-Null
+          Copy-Item dist\court-ocr.exe $out\
+          Copy-Item tesseract\tessdata\rus.traineddata "$out\tessdata\"
+          Copy-Item tesseract\tessdata\osd.traineddata "$out\tessdata\"
+          Copy-Item 'Мониторинг.bat' $out\
+          Copy-Item 'ЗАПУСК.txt' $out\
+          Get-ChildItem -Recurse $out | Select-Object FullName, @{n='МБ';e={[math]::Round($_.Length/1MB,1)}}
+
+      # Главная проверка: настоящий скан → CSV с текстом и распознанный PDF.
+      # Она ловит то, что не видно по «exe собрался»: не подхватился движок,
+      # не нашлась модель, отвалилась зависимость внутри onefile-сборки.
+      - name: Проверка сборки на тестовом скане
+        run: python .github\scripts\smoke_test.py package\court-ocr\court-ocr.exe
+
+      - name: Выложить архив
+        uses: actions/upload-artifact@v4
+        with:
+          name: court-ocr-windows-${{ github.run_number }}
+          path: package/court-ocr
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Опубликовать релиз (по тегу vX.Y.Z)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip = "court-ocr-${{ github.ref_name }}-windows.zip"
+          Compress-Archive -Path package\court-ocr -DestinationPath $zip
+          gh release create "${{ github.ref_name }}" $zip `
+            --title "court-ocr ${{ github.ref_name }}" --generate-notes

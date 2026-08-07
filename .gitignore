@@ -11,8 +11,12 @@ tessdata/
 _engine/
 *.traineddata
 
+# локальные настройки (пути к папкам конкретной машины)
+court-ocr.json
+
 # рабочие папки и результаты (могут содержать персональные данные)
 input/
 output/
 *.csv
+.court-ocr-state.json
 _icon_preview.png

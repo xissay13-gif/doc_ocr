@@ -87,11 +87,12 @@ class DescribeTargetsTest(unittest.TestCase):
     def setUp(self) -> None:
         import ocr_court
         self.describe = ocr_court.describe_targets
-        self.out, self.csv, self.pdf = (Path("/o"), Path("/c"), Path("/p"))
+        # Сравниваем со str(Path), а не с литералом: в Windows разделитель «\».
+        self.out, self.csv, self.pdf = (Path("/о"), Path("/ц"), Path("/п"))
 
     def test_single_dir(self):
         text = self.describe(self.out, self.out, self.out, True)
-        self.assertIn("Результат: /o", text)
+        self.assertIn(f"Результат: {self.out}", text)
         self.assertIn("CSV + PDF", text)
         self.assertTrue(text.endswith("\n"))
 
@@ -100,12 +101,13 @@ class DescribeTargetsTest(unittest.TestCase):
 
     def test_split_dirs_show_both(self):
         text = self.describe(self.out, self.csv, self.pdf, True)
-        self.assertIn("CSV в:     /c", text)
-        self.assertIn("PDF в:     /p", text)
+        self.assertIn(f"CSV в:     {self.csv}", text)
+        self.assertIn(f"PDF в:     {self.pdf}", text)
+        self.assertNotIn(str(self.out), text)  # база тут ни при чём
 
     def test_split_dirs_without_pdf(self):
         text = self.describe(self.out, self.csv, self.pdf, False)
-        self.assertIn("/c", text)
+        self.assertIn(str(self.csv), text)
         self.assertNotIn("PDF", text)
 
 

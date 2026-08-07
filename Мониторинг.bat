@@ -28,6 +28,11 @@ set "INPUT="
 rem Папка результатов (CSV + PDF на каждый документ).
 set "OUTPUT="
 
+rem Если CSV и PDF нужно класть ВРОЗЬ - задайте папки отдельно.
+rem Пусто - и то, и другое ляжет в OUTPUT.
+set "CSV_DIR="
+set "PDF_DIR="
+
 rem Число потоков. Пусто - по числу ядер процессора.
 set "THREADS="
 
@@ -42,6 +47,8 @@ if not "%~1"=="" set "INPUT=%~1"
 set "ARGS=--watch --no-menu"
 if defined INPUT    set "ARGS=%ARGS% --input "%INPUT%""
 if defined OUTPUT   set "ARGS=%ARGS% --output "%OUTPUT%""
+if defined CSV_DIR  set "ARGS=%ARGS% --csv-dir "%CSV_DIR%""
+if defined PDF_DIR  set "ARGS=%ARGS% --pdf-dir "%PDF_DIR%""
 if defined THREADS  set "ARGS=%ARGS% --threads %THREADS%"
 if defined INTERVAL set "ARGS=%ARGS% --interval %INTERVAL%"
 

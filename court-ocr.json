@@ -1,0 +1,12 @@
+{
+  "input_dir": "input",
+  "output_dir": "output",
+  "csv_dir": "",
+  "pdf_dir": "",
+  "threads": 0,
+  "recursive": true,
+  "watch": true,
+  "watch_interval": 2.0,
+  "watch_stable": 2,
+  "make_pdf": true
+}

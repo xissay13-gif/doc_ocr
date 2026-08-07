@@ -193,41 +193,48 @@ def _merge_pdfs(page_pdfs: List[bytes], out_path: Path) -> bool:
             out.close()
 
 
-def write_document(src_path: Path, page_map: dict, output_dir: Path,
+def write_document(src_path: Path, page_map: dict, csv_dir: Path,
+                   pdf_dir: Optional[Path] = None,
                    delimiter: str = ";", encoding: str = "cp1251",
                    make_pdf: bool = True) -> dict:
     """Записать результат ОДНОГО документа: <имя>.csv (page;line_id;line) и, при
-    make_pdf, <имя>.pdf — прямо в output/."""
+    make_pdf, <имя>.pdf. CSV и PDF можно класть в разные папки: pdf_dir=None —
+    туда же, где CSV."""
     stem = _safe_stem(src_path)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_dir = Path(csv_dir)
+    pdf_dir = Path(pdf_dir) if pdf_dir else csv_dir
+    csv_dir.mkdir(parents=True, exist_ok=True)
 
     pages = sorted(page_map.keys())
     page_rows = [page_map[i][0] for i in pages]
     line_rows = page_rows_to_lines(page_rows)
 
-    csv_path = output_dir / f"{stem}.csv"
+    csv_path = csv_dir / f"{stem}.csv"
     write_lines_csv(line_rows, csv_path, delimiter=delimiter, encoding=encoding)
 
     pdf_path = None
     if make_pdf:
+        pdf_dir.mkdir(parents=True, exist_ok=True)
         page_pdfs = [page_map[i][1] for i in pages]
-        target = output_dir / f"{stem}.pdf"
+        target = pdf_dir / f"{stem}.pdf"
         if _merge_pdfs(page_pdfs, target):
             pdf_path = target
 
-    return {"stem": stem, "dir": output_dir, "csv": csv_path, "pdf": pdf_path,
+    return {"stem": stem, "csv_dir": csv_dir, "pdf_dir": pdf_dir,
+            "csv": csv_path, "pdf": pdf_path,
             "pages": page_rows, "n_lines": len(line_rows)}
 
 
 def run_per_document(files: List[Path], tess: Optional[Tesseract], cfg: Config,
-                     threads: int, output_dir: Path,
+                     threads: int, csv_dir: Path, pdf_dir: Optional[Path] = None,
                      on_page: Optional[Callable[[dict], None]] = None,
                      on_doc: Optional[Callable[[dict], None]] = None) -> List[dict]:
     """Обработать файлы по страницам в общем пуле из `threads` потоков.
 
     Как только все страницы документа готовы — его CSV и searchable-PDF сразу
-    пишутся в output/ и вызывается on_doc(info). on_page(page_row) — по каждой
-    странице. Возвращает список info по документам (в порядке готовности)."""
+    пишутся на диск и вызывается on_doc(info). CSV кладётся в csv_dir, PDF — в
+    pdf_dir (None — туда же, где CSV). on_page(page_row) — по каждой странице.
+    Возвращает список info по документам (в порядке готовности)."""
     from .render import count_pages
 
     tasks = []
@@ -259,7 +266,7 @@ def run_per_document(files: List[Path], tess: Optional[Tesseract], cfg: Config,
             remaining[f] -= 1
             if remaining[f] == 0:
                 info = write_document(
-                    f, collected[f], output_dir,
+                    f, collected[f], csv_dir, pdf_dir,
                     delimiter=cfg.delimiter, encoding=cfg.csv_encoding,
                     make_pdf=cfg.make_pdf,
                 )

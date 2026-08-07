@@ -60,6 +60,10 @@ def _parse_args(argv=None) -> argparse.Namespace:
                    help="папка со сканами (перекрывает court-ocr.json)")
     p.add_argument("-o", "--output", metavar="DIR",
                    help="папка результатов (перекрывает court-ocr.json)")
+    p.add_argument("--csv-dir", metavar="DIR",
+                   help="класть CSV отдельно от PDF (по умолчанию — в папку результатов)")
+    p.add_argument("--pdf-dir", metavar="DIR",
+                   help="класть распознанные PDF отдельно от CSV")
     p.add_argument("-j", "--threads", type=int, metavar="N", help="число потоков")
     p.add_argument("--interval", type=float, metavar="SEC",
                    help="период опроса папки в режиме мониторинга, с")
@@ -106,7 +110,7 @@ def _mean_conf(rows) -> float:
 
 
 def process_batch(files, tess: Tesseract, cfg: Config, threads: int,
-                  output_dir: Path) -> list:
+                  csv_dir: Path, pdf_dir: Path) -> list:
     """Обработать файлы по документам: каждый документ сразу пишет свой PDF + CSV."""
     print(f"\nФайлов к обработке: {len(files)}. Потоков: {threads}.")
     print("=" * 64)
@@ -130,16 +134,21 @@ def process_batch(files, tess: Tesseract, cfg: Config, threads: int,
                 sec += float(r.get("seconds") or 0)
             except ValueError:
                 pass
-        parts = [info["csv"].name]
-        if info["pdf"]:
-            parts.append(info["pdf"].name)
         print(f"  ✓ Документ «{info['stem']}» готов: {len(pages)} стр., "
               f"{info['n_lines']} строк, машинное время {_fmt(sec)}, "
               f"точность {_mean_conf(pages)}%")
-        print("      → в папке output: " + "  +  ".join(parts))
+        if info["pdf"] and info["pdf_dir"] != info["csv_dir"]:
+            # CSV и PDF разведены по разным папкам — показываем оба пути целиком
+            print(f"      → CSV: {info['csv']}")
+            print(f"      → PDF: {info['pdf']}")
+        else:
+            parts = [info["csv"].name]
+            if info["pdf"]:
+                parts.append(info["pdf"].name)
+            print(f"      → в папке {info['csv_dir']}: " + "  +  ".join(parts))
         print("-" * 64)
 
-    docs = run_per_document(files, tess, cfg, threads, output_dir,
+    docs = run_per_document(files, tess, cfg, threads, csv_dir, pdf_dir,
                             on_page=on_page, on_doc=on_doc)
     elapsed = time.perf_counter() - t0
 
@@ -148,12 +157,16 @@ def process_batch(files, tess: Tesseract, cfg: Config, threads: int,
     print("=" * 64)
     print(f"Готово за {_fmt(elapsed)}. Документов: {len(docs)}, страниц: {len(all_rows)} "
           f"(ошибок: {errs}), средняя точность {_mean_conf(all_rows)}%.")
-    print(f"Результаты (CSV + PDF на каждый файл) в папке: {output_dir}")
+    if pdf_dir != csv_dir:
+        print(f"CSV в папке: {csv_dir}")
+        print(f"PDF в папке: {pdf_dir}")
+    else:
+        print(f"Результаты (CSV + PDF на каждый файл) в папке: {csv_dir}")
     return docs
 
 
 def run_once(watcher: Watcher, tess: Tesseract, cfg: Config, threads: int,
-             output_dir: Path) -> None:
+             csv_dir: Path, pdf_dir: Path) -> None:
     """Разовый проход: взять то, что уже лежит в папке, и обработать."""
     files = watcher.poll()
     if not files:
@@ -168,14 +181,14 @@ def run_once(watcher: Watcher, tess: Tesseract, cfg: Config, threads: int,
         print(f"\nНовых файлов нет. Папка входа: {watcher.paths[0]}")
         return
     try:
-        process_batch(files, tess, cfg, threads, output_dir)
+        process_batch(files, tess, cfg, threads, csv_dir, pdf_dir)
     finally:
         for f in files:
             watcher.mark_done(f)
 
 
 def run_watch(watcher: Watcher, tess: Tesseract, cfg: Config, threads: int,
-              output_dir: Path) -> None:
+              csv_dir: Path, pdf_dir: Path) -> None:
     """Непрерывный мониторинг: распознаём документы по мере появления."""
     print()
     print("=" * 64)
@@ -191,7 +204,7 @@ def run_watch(watcher: Watcher, tess: Tesseract, cfg: Config, threads: int,
         if idle_drawn:
             print()  # закрыть строку ожидания, которая печаталась через \r
             idle_drawn = False
-        process_batch(files, tess, cfg, threads, output_dir)
+        process_batch(files, tess, cfg, threads, csv_dir, pdf_dir)
 
     def on_idle():
         nonlocal idle_drawn
@@ -219,6 +232,15 @@ def edit_settings(data: dict) -> dict:
     data["input_dir"] = ask("Папка со сканами", data["input_dir"])
     data["output_dir"] = ask("Папка результатов", data["output_dir"])
 
+    print("  Ниже — только если CSV и PDF нужно класть врозь.")
+    print("  Пусто (или «-» чтобы очистить) — оба в папке результатов.")
+    for key, title in (("csv_dir", "Папка для CSV"), ("pdf_dir", "Папка для PDF")):
+        raw = input(f"  {title} [{data[key] or 'как папка результатов'}]: ").strip().strip('"')
+        if raw == "-":
+            data[key] = ""
+        elif raw:
+            data[key] = raw
+
     raw = ask("Потоков (0 — по числу ядер)", data["threads"])
     try:
         data["threads"] = max(0, int(raw))
@@ -241,11 +263,14 @@ def edit_settings(data: dict) -> dict:
     return data
 
 
-def show_settings(input_dir: Path, output_dir: Path, threads: int,
-                  interval: float, watch_default: bool) -> None:
+def show_settings(input_dir: Path, output_dir: Path, csv_dir: Path, pdf_dir: Path,
+                  threads: int, interval: float, watch_default: bool) -> None:
     cfg_file = settings.config_path(BASE)
     print(f"  Папка со сканами:   {input_dir}")
     print(f"  Папка результатов:  {output_dir}")
+    if csv_dir != output_dir or pdf_dir != output_dir:
+        print(f"    └ CSV:            {csv_dir}")
+        print(f"    └ PDF:            {pdf_dir}")
     print(f"  Потоков:            {threads}")
     print(f"  Опрос папки:        раз в {interval:g} с")
     print(f"  Файл настроек:      {cfg_file}"
@@ -253,14 +278,16 @@ def show_settings(input_dir: Path, output_dir: Path, threads: int,
     print(f"  Режим по умолчанию: {'мониторинг' if watch_default else 'разовый проход'}")
 
 
-def _make_watcher(input_dir: Path, output_dir: Path, data: dict) -> Watcher:
-    state = StateStore(output_dir / STATE_NAME)
+def _make_watcher(input_dir: Path, out_dirs: list, data: dict) -> Watcher:
+    state = StateStore(out_dirs[0] / STATE_NAME)
     return Watcher(
         [input_dir],
         recursive=bool(data["recursive"]),
         interval=float(data["watch_interval"]),
         stable_checks=int(data["watch_stable"]),
-        exclude=[output_dir],   # результаты не должны попадать обратно на вход
+        # Ни одна папка результатов не должна попасть обратно на вход, иначе
+        # распознанный PDF пойдёт на второй круг.
+        exclude=out_dirs,
         state=state,
     )
 
@@ -274,6 +301,10 @@ def main(argv=None) -> int:
         data["input_dir"] = args.input
     if args.output:
         data["output_dir"] = args.output
+    if args.csv_dir:
+        data["csv_dir"] = args.csv_dir
+    if args.pdf_dir:
+        data["pdf_dir"] = args.pdf_dir
     if args.threads is not None:
         data["threads"] = args.threads
     if args.interval is not None:
@@ -310,11 +341,17 @@ def main(argv=None) -> int:
     tess = Tesseract(tess_cmd, tessdata=tessdata, lang="rus", psm=6, oem=1, dpi=300)
 
     while True:
-        input_dir = settings.resolve_dir(BASE, data["input_dir"])
-        output_dir = settings.resolve_dir(BASE, data["output_dir"])
+        input_dir = settings.resolve_dir(BASE, data["input_dir"], "input")
+        output_dir = settings.resolve_dir(BASE, data["output_dir"], "output")
+        # Пусто — значит «туда же, куда всё остальное».
+        csv_dir = settings.resolve_optional_dir(BASE, data["csv_dir"]) or output_dir
+        pdf_dir = settings.resolve_optional_dir(BASE, data["pdf_dir"]) or output_dir
+        # output_dir остаётся базой: там лежит память об обработанном.
+        out_dirs = list(dict.fromkeys([output_dir, csv_dir, pdf_dir]))
         try:
             input_dir.mkdir(parents=True, exist_ok=True)
-            output_dir.mkdir(parents=True, exist_ok=True)
+            for d in out_dirs:
+                d.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             print(f"\nОШИБКА: не удалось создать папку: {exc}")
             if args.no_menu:
@@ -327,19 +364,19 @@ def main(argv=None) -> int:
                      base_dir=input_dir)
 
         print(f"  Языковая модель:    {tessdata}")
-        show_settings(input_dir, output_dir, threads, float(data["watch_interval"]),
-                      bool(data["watch"]))
+        show_settings(input_dir, output_dir, csv_dir, pdf_dir, threads,
+                      float(data["watch_interval"]), bool(data["watch"]))
 
-        watcher = _make_watcher(input_dir, output_dir, data)
+        watcher = _make_watcher(input_dir, out_dirs, data)
         if args.rescan:
             watcher.state.clear()
             args.rescan = False  # только для первого запуска
 
         if args.no_menu:
             if data["watch"]:
-                run_watch(watcher, tess, cfg, threads, output_dir)
+                run_watch(watcher, tess, cfg, threads, csv_dir, pdf_dir)
             else:
-                run_once(watcher, tess, cfg, threads, output_dir)
+                run_once(watcher, tess, cfg, threads, csv_dir, pdf_dir)
             return 0
 
         print()
@@ -364,9 +401,9 @@ def main(argv=None) -> int:
             print(f"  Память очищена: при следующем проходе будет взято файлов: {n}")
             continue
         if choice == "1":
-            run_once(watcher, tess, cfg, threads, output_dir)
+            run_once(watcher, tess, cfg, threads, csv_dir, pdf_dir)
         else:
-            run_watch(watcher, tess, cfg, threads, output_dir)
+            run_watch(watcher, tess, cfg, threads, csv_dir, pdf_dir)
 
     print("Завершение.")
     return 0

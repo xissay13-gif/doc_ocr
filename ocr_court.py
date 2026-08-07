@@ -87,6 +87,10 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--output-dir", metavar="DIR", default="output",
                    help="папка результатов в режиме --watch: на каждый документ "
                         "свой CSV и PDF (по умолчанию ./output)")
+    w.add_argument("--csv-dir", metavar="DIR",
+                   help="класть CSV отдельно от PDF (по умолчанию — в --output-dir)")
+    w.add_argument("--pdf-dir", metavar="DIR",
+                   help="класть распознанные PDF отдельно от CSV")
     w.add_argument("--watch-interval", type=float, default=DEFAULT_INTERVAL,
                    metavar="SEC", help=f"период опроса папки, с (по умолчанию {DEFAULT_INTERVAL:g})")
     w.add_argument("--watch-stable", type=int, default=DEFAULT_STABLE, metavar="N",
@@ -188,16 +192,36 @@ def main(argv=None) -> int:
     return 0
 
 
+def describe_targets(output_dir: Path, csv_dir: Path, pdf_dir: Path,
+                     make_pdf: bool) -> str:
+    """Строки «куда кладём результат» для шапки мониторинга.
+
+    Когда CSV и PDF идут в одну папку, показываем её одной строкой; когда
+    разведены — обе, иначе непонятно, куда смотреть."""
+    if csv_dir == pdf_dir == output_dir:
+        return (f"Результат: {output_dir} — "
+                f"CSV{' + PDF' if make_pdf else ''} на каждый документ\n")
+    lines = f"CSV в:     {csv_dir}\n"
+    if make_pdf:
+        lines += f"PDF в:     {pdf_dir}\n"
+    return lines
+
+
 def _watch(args, tess: Tesseract, cfg: Config) -> int:
     """Непрерывный мониторинг: распознаём документы по мере появления в папке.
 
     Результат пишется по документам (как в интерактивном приложении): на каждый
     входной файл — свой CSV и, если не отключено, распознанный PDF."""
     output_dir = Path(args.output_dir).expanduser()
+    csv_dir = Path(args.csv_dir).expanduser() if args.csv_dir else output_dir
+    pdf_dir = Path(args.pdf_dir).expanduser() if args.pdf_dir else output_dir
+    # output_dir остаётся базой: в нём лежит память об уже обработанном.
+    out_dirs = list(dict.fromkeys([output_dir, csv_dir, pdf_dir]))
     try:
-        output_dir.mkdir(parents=True, exist_ok=True)
+        for d in out_dirs:
+            d.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        sys.stderr.write(f"Не удалось создать папку результатов {output_dir}: {exc}\n")
+        sys.stderr.write(f"Не удалось создать папку результатов: {exc}\n")
         return 2
 
     state = StateStore(output_dir / STATE_NAME)
@@ -209,7 +233,7 @@ def _watch(args, tess: Tesseract, cfg: Config) -> int:
         recursive=args.recursive,
         interval=args.watch_interval,
         stable_checks=args.watch_stable,
-        exclude=[output_dir],   # распознанные PDF не должны вернуться на вход
+        exclude=out_dirs,   # распознанные PDF не должны вернуться на вход
         state=state,
     )
     if args.watch_new_only:
@@ -219,9 +243,9 @@ def _watch(args, tess: Tesseract, cfg: Config) -> int:
         f"Потоков:   {args.threads}\n"
         f"Слежу за:  {', '.join(str(Path(p)) for p in args.inputs)}"
         f"{' (с подпапками)' if args.recursive else ''}\n"
-        f"Результат: {output_dir.resolve()} — "
-        f"CSV{' + PDF' if cfg.make_pdf else ''} на каждый документ\n"
-        f"Опрос раз в {args.watch_interval:g} с. Ctrl+C — остановить.\n"
+        + describe_targets(output_dir.resolve(), csv_dir.resolve(),
+                           pdf_dir.resolve(), cfg.make_pdf)
+        + f"Опрос раз в {args.watch_interval:g} с. Ctrl+C — остановить.\n"
     )
 
     totals = {"docs": 0, "pages": 0, "lines": 0, "errors": 0}
@@ -236,13 +260,16 @@ def _watch(args, tess: Tesseract, cfg: Config) -> int:
     def on_doc(info: dict) -> None:
         totals["docs"] += 1
         totals["lines"] += info["n_lines"]
-        names = info["csv"].name + (f" + {info['pdf'].name}" if info["pdf"] else "")
+        if info["pdf"] and info["pdf_dir"] != info["csv_dir"]:
+            names = f"{info['csv']} + {info['pdf']}"
+        else:
+            names = info["csv"].name + (f" + {info['pdf'].name}" if info["pdf"] else "")
         print(f"[{time.strftime('%H:%M:%S')}] {info['stem']}: "
               f"{len(info['pages'])} стр., {info['n_lines']} строк → {names}", flush=True)
 
     def handler(files) -> None:
         sys.stderr.write(f"\nНовых файлов: {len(files)} — распознаю...\n")
-        run_per_document(files, tess, cfg, args.threads, output_dir,
+        run_per_document(files, tess, cfg, args.threads, csv_dir, pdf_dir,
                          on_page=on_page, on_doc=on_doc)
 
     try:
@@ -252,7 +279,7 @@ def _watch(args, tess: Tesseract, cfg: Config) -> int:
             "\nМониторинг остановлен.\n"
             f"  Документов: {totals['docs']}, страниц: {totals['pages']} "
             f"(ошибок: {totals['errors']}), строк: {totals['lines']}\n"
-            f"  Результаты: {output_dir.resolve()}\n"
+            + "".join(f"  Результаты: {d.resolve()}\n" for d in out_dirs)
         )
     return 0
 

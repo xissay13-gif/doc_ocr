@@ -25,13 +25,16 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 CONFIG_NAME = "court-ocr.json"
 
 DEFAULTS: Dict[str, Any] = {
     "input_dir": "input",
     "output_dir": "output",
+    # Куда класть CSV и распознанные PDF по отдельности. Пусто — оба в output_dir.
+    "csv_dir": "",
+    "pdf_dir": "",
     "threads": 0,            # 0 — по числу ядер CPU
     "recursive": True,       # заходить в подпапки входной папки
     "watch": True,           # непрерывный мониторинг вместо разового прохода
@@ -44,6 +47,8 @@ DEFAULTS: Dict[str, Any] = {
 ENV_MAP = {
     "COURT_OCR_INPUT": "input_dir",
     "COURT_OCR_OUTPUT": "output_dir",
+    "COURT_OCR_CSV_DIR": "csv_dir",
+    "COURT_OCR_PDF_DIR": "pdf_dir",
     "COURT_OCR_THREADS": "threads",
     "COURT_OCR_RECURSIVE": "recursive",
     "COURT_OCR_WATCH": "watch",
@@ -118,10 +123,20 @@ def save(base: Path, data: Dict[str, Any]) -> Path:
     return path
 
 
-def resolve_dir(base: Path, value: Any) -> Path:
-    """Путь из настроек → абсолютный (с раскрытием ~ и переменных окружения)."""
-    text = os.path.expandvars(str(value)).strip().strip('"')
-    path = Path(text).expanduser() if text else Path(DEFAULTS["input_dir"])
-    if not path.is_absolute():
-        path = Path(base) / path
-    return path
+def resolve_optional_dir(base: Path, value: Any) -> Optional[Path]:
+    """Путь, который можно не задавать: пусто → None.
+
+    Раскрывает ~, %ПЕРЕМЕННУЮ%/$ПЕРЕМЕННУЮ и снимает кавычки (путь часто
+    копируют из Проводника вместе с ними). Относительный путь считается от
+    папки программы."""
+    text = os.path.expandvars(str(value or "")).strip().strip('"')
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    return path if path.is_absolute() else Path(base) / path
+
+
+def resolve_dir(base: Path, value: Any, default: str = "output") -> Path:
+    """То же, но для обязательного пути: пусто → значение default."""
+    return resolve_optional_dir(base, value) or resolve_optional_dir(base, default) \
+        or Path(base) / default

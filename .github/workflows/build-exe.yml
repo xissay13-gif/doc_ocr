@@ -81,6 +81,7 @@ jobs:
           Copy-Item tesseract\tessdata\osd.traineddata "$out\tessdata\"
           Copy-Item 'Мониторинг.bat' $out\
           Copy-Item 'ЗАПУСК.txt' $out\
+          Copy-Item 'court-ocr.json' $out\
           Get-ChildItem -Recurse $out | Select-Object FullName, @{n='МБ';e={[math]::Round($_.Length/1MB,1)}}
 
       # Главная проверка: настоящий скан → CSV с текстом и распознанный PDF.

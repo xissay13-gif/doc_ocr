@@ -1,0 +1,2 @@
+# .bat: в рабочем каталоге всегда CRLF — cmd.exe не любит одиночные LF
+*.bat text eol=crlf

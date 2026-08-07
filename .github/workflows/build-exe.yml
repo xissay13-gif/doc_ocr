@@ -22,6 +22,10 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write   # нужно только последнему шагу — публикации релиза по тегу
+    env:
+      # Вывод шагов уходит в файл лога, и Python берёт кодировку из локали
+      # раннера (cp1252) — русские сообщения падали бы с UnicodeEncodeError.
+      PYTHONUTF8: '1'
 
     steps:
       - uses: actions/checkout@v4

@@ -46,6 +46,18 @@ TARGET = ROOT / "tesseract"
 UA = {"User-Agent": "court-ocr-setup/1.0"}
 
 
+def _reconfigure_console() -> None:
+    """Печатать по-русски даже когда вывод перенаправлен в файл или конвейер.
+
+    В Windows у перенаправленного stdout кодировка берётся из локали (cp1252 и
+    подобные), и первый же русский print падает с UnicodeEncodeError."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
 def _download(url: str, dest: Path) -> None:
     """Скачать url → dest с показом прогресса."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -173,6 +185,7 @@ def install_langs(langs, best: bool, force: bool) -> None:
 
 
 def main(argv=None) -> int:
+    _reconfigure_console()   # до parse_args: справка и ошибки тоже по-русски
     p = argparse.ArgumentParser(description="Встроить Tesseract и языковые модели в проект.")
     p.add_argument("--data-only", action="store_true",
                    help="только скачать языковые модели (движок уже установлен/встроен)")

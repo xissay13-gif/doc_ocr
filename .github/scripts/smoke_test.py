@@ -63,10 +63,16 @@ def main(argv: list[str]) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         inbox, outbox = root / "in", root / "out"
+        csv_out, pdf_out = root / "csv", root / "pdf"
         inbox.mkdir()
         make_scan(inbox / "тестовый_приказ.png")
 
+        # Переопределяем ВСЕ папки, иначе проверка возьмёт пути из court-ocr.json
+        # рядом с exe — а там боевые сетевые диски, которых на сборке нет.
+        # Заодно это проверяет, что CSV и PDF действительно расходятся по разным
+        # папкам в настоящей собранной программе.
         cmd = [str(program), "--input", str(inbox), "--output", str(outbox),
+               "--csv-dir", str(csv_out), "--pdf-dir", str(pdf_out),
                "--threads", "2", "--once", "--no-menu"]
         print("Запускаю:", " ".join(cmd), flush=True)
         proc = subprocess.run(cmd, capture_output=True, timeout=600)
@@ -80,11 +86,12 @@ def main(argv: list[str]) -> int:
             print(f"ОШИБКА: программа завершилась с кодом {proc.returncode}")
             return 1
 
-        csv_path = outbox / "тестовый_приказ.csv"
-        pdf_path = outbox / "тестовый_приказ.pdf"
+        csv_path = csv_out / "тестовый_приказ.csv"
+        pdf_path = pdf_out / "тестовый_приказ.pdf"
         if not csv_path.is_file():
-            print(f"ОШИБКА: не создан CSV. В папке результатов: "
-                  f"{[p.name for p in outbox.glob('*')] if outbox.is_dir() else 'папки нет'}")
+            found = [str(p) for p in root.rglob("*") if p.is_file()]
+            print("ОШИБКА: не создан CSV. Что вообще получилось:\n  "
+                  + ("\n  ".join(found) if found else "(пусто)"))
             return 1
 
         text = csv_path.read_text(encoding="cp1251", errors="replace")
@@ -107,7 +114,13 @@ def main(argv: list[str]) -> int:
             return 1
         print(f"PDF: {pdf_path.stat().st_size // 1024} КБ")
 
-    print("\nПроверка пройдена: движок, языковая модель, CSV и PDF работают.")
+        # Раздельные папки должны быть именно раздельными.
+        if list(pdf_out.glob("*.csv")) or list(csv_out.glob("*.pdf")):
+            print("ОШИБКА: CSV и PDF перепутаны местами")
+            return 1
+
+    print("\nПроверка пройдена: движок, языковая модель, CSV и PDF работают,"
+          "\nраздельные папки для CSV и PDF соблюдаются.")
     return 0
 
 

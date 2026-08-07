@@ -1,8 +1,8 @@
 {
-  "input_dir": "input",
+  "input_dir": "Z:\\УПОПТЭ Распознавание\\_ВХОДЯЩИЕ",
   "output_dir": "output",
-  "csv_dir": "",
-  "pdf_dir": "",
+  "csv_dir": "Z:\\УПОПТЭ Распознавание\\import",
+  "pdf_dir": "Z:\\УПОПТЭ Распознавание\\pdf\\Пачка Приказы",
   "threads": 0,
   "recursive": true,
   "watch": true,
